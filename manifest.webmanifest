@@ -1,0 +1,17 @@
+{
+  "name": "ChillBus · 搭車從容啲",
+  "short_name": "ChillBus",
+  "description": "實時巴士到站監控 × 步行時間規劃 × 出發提醒，唔使再為咗巴士拼命跑。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef2f6",
+  "theme_color": "#0b3b3c",
+  "lang": "zh-Hant-HK",
+  "categories": ["travel", "navigation", "utilities"],
+  "icons": [
+    { "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./assets/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

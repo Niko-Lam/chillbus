@@ -1,0 +1,14 @@
+{
+  "name": "chillbus",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ChillBus — 實時巴士到站監控 × 步行時間規劃 × 出門提醒（單頁應用）",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "npx --yes serve . -l 4173",
+    "start": "npx --yes serve . -l 4173"
+  },
+  "keywords": ["bus", "eta", "hong-kong", "kmb", "citybus", "vercel", "pwa"],
+  "license": "MIT"
+}
