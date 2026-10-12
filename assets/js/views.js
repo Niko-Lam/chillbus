@@ -8,7 +8,7 @@ import {
 import { openRouteEditor, openPlaceEditor } from './editors.js';
 import { confirmDialog, openModal } from './modal.js';
 import { resolveRoute, fetchRouteStops, walkTime, rideEstimate, locate } from './services.js';
-import { showWalk, showPlan, openDock, closeDock, setLegend, setMarkers, fit } from './map.js';
+import { showWalk, showPlan, openDock, closeDock, setLegend, setMarkers, fit, setMe, clearMe, drawNavProgress } from './map.js';
 import * as monitor from './monitor.js';
 import { plan, clearPlanCache } from './planner.js';
 
@@ -115,7 +115,7 @@ function buildActions() {
   } else {
     heroActions.append(
       el('button', { class: 'btn solid', onclick: () => startActive() }, [svgIcon('play', 17), '開始監控']),
-      el('button', { class: 'btn', onclick: () => showRouteMap() }, [svgIcon('pin', 17), '睇步行路線']),
+      el('button', { class: 'btn', onclick: () => startNav() }, [svgIcon('target', 17), '開始導航']),
     );
   }
 }
@@ -131,32 +131,147 @@ function startActive() {
 function buildWalk() {
   const { route, walkBox } = goRefs;
   const from = getPlace(route.fromPlaceId);
-  const to = getPlace(route.toPlaceId);
+  const chip = el('span', { class: 'chip', id: 'walkChip', text: '計算中…' });
+  const bodyEl = el('div', { class: 'card-body', id: 'walkBody' }, [
+    el('div', { class: 'loading-inline' }, [el('span', { class: 'spinner' }), '計緊步行時間…']),
+  ]);
+  const footEl = el('div', { class: 'card-foot', id: 'walkFoot' });
   clear(walkBox);
   walkBox.append(
     el('div', { class: 'card-head' }, [
       el('div', {}, [el('h3', { text: '行去巴士站' }), el('div', { class: 'sub', text: `${from ? from.name : '出發點'} → ${route.boardName || '上車站'}` })]),
-      el('span', { class: 'chip', id: 'walkChip', text: '計算中…' }),
+      chip,
     ]),
-    el('div', { class: 'card-body', id: 'walkBody' }, [el('div', { class: 'loading-inline' }, [el('span', { class: 'spinner' }), '計緊步行時間…'])]),
-    el('div', { class: 'card-foot' }, [
-      el('button', { class: 'btn line sm', onclick: () => showRouteMap() }, [svgIcon('pin', 16), '地圖路線']),
-      el('button', {
-        class: 'btn line sm', onclick: async (e) => {
-          const b = e.currentTarget; b.disabled = true;
-          try {
-            const p = await locate();
-            const w = await walkTime(p, { lat: route.boardLat, lng: route.boardLng });
-            fillWalk(w, { lat: p.lat, lng: p.lng, name: '目前位置' }, route, '目前位置 → 上車站');
-          } catch (err) { toast('定位失敗', { body: err.message, type: 'alert' }); }
-          finally { b.disabled = false; }
-        },
-      }, [svgIcon('target', 16), '我而喺邊']),
-      route.fromPlaceId ? el('button', { class: 'btn quiet sm', text: '改出發點', onclick: () => openRouteEditor(route.id, { onSaved: () => renderAll() }) }) : null,
+    bodyEl,
+    footEl,
+  );
+  goRefs.walkChip = chip;
+  goRefs.walkBody = bodyEl;
+  goRefs.walkFoot = footEl;
+  renderWalkFoot();
+  const origin = from || { lat: route.boardLat, lng: route.boardLng, name: '上車站' };
+  if (from) walkTime(from, { lat: route.boardLat, lng: route.boardLng }).then((w) => {
+    if (!monitor.isNavigating(route.id)) fillWalk(w, from, route);
+  }).catch(() => {});
+}
+
+/** 步行卡底部按鈕（跟住導航狀態切換） */
+function renderWalkFoot() {
+  const { route, walkFoot } = goRefs;
+  if (!walkFoot) return;
+  const navOn = monitor.isNavigating(route.id);
+  clear(walkFoot);
+  walkFoot.append(
+    el('button', { class: 'btn line sm', onclick: () => showRouteMap() }, [svgIcon('pin', 16), '地圖路線']),
+    navOn
+      ? el('button', { class: 'btn sm solid-dark', onclick: () => stopNav() }, [svgIcon('pause', 16), '停止導航'])
+      : el('button', { class: 'btn primary sm', onclick: () => startNav() }, [svgIcon('target', 16), '開始實時導航']),
+    !navOn ? el('button', {
+      class: 'btn line sm',
+      onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          const p = await locate();
+          const w = await walkTime(p, { lat: route.boardLat, lng: route.boardLng });
+          fillWalk(w, { lat: p.lat, lng: p.lng, name: '目前位置' }, route, '目前位置 → 上車站');
+        } catch (err) { toast('定位失敗', { body: err.message, type: 'alert' }); }
+        finally { b.disabled = false; }
+      },
+    }, [svgIcon('target', 16), '我而喺邊']) : null,
+    route.fromPlaceId ? el('button', { class: 'btn quiet sm', text: '改出發點', onclick: () => openRouteEditor(route.id, { onSaved: () => renderAll() }) }) : null,
+  );
+}
+
+/* ---- 實時導航 ---- */
+function startNav() {
+  const route = goRefs && goRefs.route;
+  if (!route) return;
+  const rec = monitor.startNavigation(route.id);
+  if (!rec) return;
+  openDock();
+  paintGo(true);
+}
+
+function stopNav() {
+  const route = goRefs && goRefs.route;
+  if (!route) return;
+  monitor.stopNavigation(route.id);
+  clearMe();
+  goRefs.navSig = '';
+  paintGo(true);   // paintGo 會偵測到導航結束，自動重建步行卡
+}
+
+/** 導航面板：剩餘時間／距離／進度 */
+function paintNavPanel(route, nav) {
+  const { walkBody, walkChip } = goRefs;
+  if (!walkBody) return;
+  if (walkChip) {
+    walkChip.textContent = nav.arrived ? '已到達 ✓' : nav.waiting ? '定位中…' : nav.offRoute ? '重新規劃中…' : '導航中';
+    walkChip.className = `chip${nav.arrived ? '' : ' brand'}`;
+  }
+  clear(walkBody);
+  const pct = Math.round((nav.ratio || 0) * 100);
+  walkBody.append(
+    el('div', { class: 'stat-row' }, [
+      el('div', { class: 'stat' }, [
+        el('b', { text: nav.remainSec == null ? '—' : nav.remainSec < 60 ? `${nav.remainSec} 秒` : `${Math.ceil(nav.remainSec / 60)} 分` }),
+        el('span', { text: nav.arrived ? '已到站' : '剩餘時間' }),
+      ]),
+      el('div', { class: 'stat' }, [el('b', { text: nav.remainDist == null ? '—' : fmtDistance(nav.remainDist) }), el('span', { text: '剩餘距離' })]),
+      el('div', { class: 'stat' }, [el('b', { text: `${pct}%` }), el('span', { text: '已行進度' })]),
+    ]),
+    el('div', { class: 'walk-progress' }, [el('span', { style: { width: `${pct}%` } })]),
+    el('div', { class: 'li-sub', style: { marginTop: '9px' } }, [
+      nav.waiting && !nav.position ? '等緊 GPS 定位…（室內訊號可能較弱）'
+        : nav.arrived ? `你已經到咗 ${route.boardName}，可以等車喇。`
+        : nav.offRoute ? '你似乎離開咗建議路線，重新幫你規劃中…'
+        : nav.position ? `位置更新：${fmtClock(new Date(nav.position.at))}${nav.accuracy ? ` · 誤差約 ${Math.round(nav.accuracy)} 米` : ''}`
+        : '定位中…',
     ]),
   );
-  const origin = from || { lat: route.boardLat, lng: route.boardLng, name: '上車站' };
-  if (from) walkTime(from, { lat: route.boardLat, lng: route.boardLng }).then((w) => fillWalk(w, from, route)).catch(() => {});
+  if (nav.error && !nav.position) walkBody.append(el('div', { class: 'note err', style: { marginTop: '10px' }, text: nav.error.message }));
+  if (nav.arrived) walkBody.append(el('div', { class: 'note', style: { marginTop: '10px' }, text: '🚏 到站後可以撳「我上車了」，App 會改為追蹤落車站。' }));
+}
+
+/** 地圖：導航路線 + 藍點 + 進度 */
+function paintNavMap(route, nav) {
+  const sig = `${nav.walk ? nav.walk.distance + '@' + nav.walk.coords.length : 'none'}|${nav.position ? 'pos' : 'nopos'}`;
+  if (goRefs.navSig !== sig) {
+    // 路線有變（首次／重新規劃）→ 重畫成張圖
+    goRefs.navSig = sig;
+    const from = nav.position
+      ? { lat: nav.position.lat, lng: nav.position.lng, name: '我現在位置' }
+      : (getPlace(route.fromPlaceId) || { lat: route.boardLat, lng: route.boardLng, name: '出發點' });
+    const to = { lat: route.boardLat, lng: route.boardLng, name: route.boardName, kind: 'board', text: '上' };
+    if (nav.walk) showWalk({ from, to, walk: nav.walk });
+    else { setMarkers([{ ...from, kind: 'place', text: '起', label: from.name }, { ...to, kind: 'board', text: '上', label: to.name }]); fit([from, to]); }
+  }
+  // 進度線 + 藍點（每次定位更新都重畫，成本好低）
+  if (nav.walk) drawNavProgress(nav.walk.coords, nav.index);
+  if (nav.position) setMe(nav.position, { accuracy: nav.accuracy, follow: !nav.arrived });
+  setLegend([
+    nav.ratio < 0.995 ? { color: '#2563eb', text: '未行' } : null,
+    nav.ratio > 0.005 ? { color: '#94a3b8', text: '行過' } : null,
+    nav.offRoute ? { color: '#e08600', text: '離開路線，重新規劃中' } : null,
+  ].filter(Boolean));
+
+  // 地圖內導航狀態列
+  const bar = document.getElementById('mapNavBar');
+  if (bar) {
+    bar.hidden = false;
+    const t = document.getElementById('mnTime');
+    const d = document.getElementById('mnDist');
+    if (t) t.textContent = nav.arrived ? '已到達 ✓' : nav.remainSec == null ? '定位中…' : `${fmtDuration(nav.remainSec)} 到站`;
+    if (d) d.textContent = nav.arrived ? `${route.boardName} 已到`
+      : nav.remainDist == null ? '等緊 GPS 訊號'
+      : `仲有 ${fmtDistance(nav.remainDist)}${nav.offRoute ? ' · 重新規劃中' : ''}`;
+  }
+}
+
+/** 收起導航列 */
+export function hideNavBar() {
+  const bar = document.getElementById('mapNavBar');
+  if (bar) bar.hidden = true;
 }
 
 function fillWalk(walk, origin, route, label) {
@@ -252,6 +367,17 @@ export function paintGo(force = false) {
     goRefs.actionsMonitoring = monitoringNow;
     buildActions();
   }
+
+  // 實時導航：更新面板 + 地圖藍點
+  const navNow = monitor.isNavigating(route.id);
+  if (goRefs.navOn !== navNow) {
+    goRefs.navOn = navNow;
+    renderWalkFoot();
+    if (!navNow) { clearMe(); hideNavBar(); goRefs.navSig = ''; buildWalk(); }
+  }
+  const nav = navNow ? monitor.getNav(route.id) : null;
+  if (nav) { paintNavPanel(route, nav); paintNavMap(route, nav); }
+
   const snap = monitoringNow ? monitor.snapshot(route.id) : null;
 
   /* hero */

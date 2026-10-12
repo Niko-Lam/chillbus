@@ -2,7 +2,7 @@
    main.js — 啟動
    ============================================================ */
 import {
-  state, loadState, $, toast, setNet, notifPermission, requestNotif, on, commit,
+  state, loadState, $, toast, setNet, notifPermission, requestNotif, on, commit, activeRoute,
 } from './core.js';
 import { initMap, openDock, closeDock, mapAvailable, invalidate } from './map.js';
 import { initViews, setView, renderAll, loadDemo, getCurrentView, showCurrentTripMap } from './views.js';
@@ -43,6 +43,10 @@ function wireChrome() {
     paintNotifButton();
   });
   $('#btnCloseMap')?.addEventListener('click', () => closeDock());
+  $('#mnStop')?.addEventListener('click', () => {
+    const r = activeRoute();
+    if (r) monitor.stopNavigation(r.id);
+  });
   $('#btnOpenMap')?.addEventListener('click', () => { showCurrentTripMap(); openDock(); invalidate(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeDock();

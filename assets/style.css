@@ -171,6 +171,22 @@ a{color:var(--brand);text-decoration:none}
 }
 .legend-chip b{color:var(--ink);font-variant-numeric:tabular-nums}
 .legend-dot{width:9px;height:9px;border-radius:50%;flex:none}
+/* 地圖內導航狀態列（左下角，避開右下角縮放鈕） */
+.map-navbar{
+  position:absolute;z-index:500;left:14px;bottom:14px;right:70px;
+  display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:15px;
+  background:color-mix(in srgb,var(--surface) 95%,transparent);backdrop-filter:blur(12px);
+  border:1px solid var(--line);box-shadow:var(--shadow-2);
+}
+.map-navbar .mn-dot{
+  width:10px;height:10px;border-radius:50%;background:var(--go);flex:none;
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--go) 22%,transparent);animation:pulse 1.6s infinite;
+}
+.map-navbar .mn-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.22}
+.map-navbar .mn-text b{font-size:17px;font-weight:730;font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+.map-navbar .mn-text span{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.map-navbar .btn{flex:none}
+
 .map-hint{
   position:absolute;z-index:500;left:50%;bottom:22px;transform:translateX(-50%);
   padding:9px 16px;border-radius:999px;background:rgba(13,27,42,.86);color:#fff;font-size:13px;
@@ -186,6 +202,24 @@ a{color:var(--brand);text-decoration:none}
 .leaflet-control-attribution{font-size:10px !important;background:color-mix(in srgb,var(--surface) 80%,transparent)!important;color:var(--muted)!important}
 .leaflet-control-attribution a{color:var(--muted)!important}
 .leaflet-bar a{color:var(--ink)!important;background:var(--surface)!important;border-color:var(--line)!important}
+
+/* 右下角縮放鈕：加大觸控範圍、圓角、陰影 */
+.leaflet-bottom.leaflet-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.leaflet-control-zoom.leaflet-bar{
+  border:1px solid var(--line)!important;border-radius:14px!important;overflow:hidden;
+  box-shadow:var(--shadow-2)!important;margin:0 10px 12px 0!important;
+}
+.leaflet-control-zoom.leaflet-bar a{
+  width:44px!important;height:42px!important;line-height:42px!important;
+  font-size:21px!important;font-weight:500!important;border:0!important;
+  border-bottom:1px solid var(--line-2)!important;border-radius:0!important;
+  display:flex!important;align-items:center;justify-content:center;
+  transition:background .14s;
+}
+.leaflet-control-zoom.leaflet-bar a:last-child{border-bottom:0!important}
+.leaflet-control-zoom.leaflet-bar a:hover{background:var(--surface-3)!important}
+.leaflet-control-zoom.leaflet-bar a.leaflet-disabled{opacity:.4}
+.leaflet-control-attribution{margin:0 0 2px 0!important;border-radius:8px 0 0 0}
 .leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--surface);color:var(--ink)}
 .map-pin{
   display:grid;place-items:center;font-size:12px;font-weight:800;border-radius:50% 50% 50% 3px;
@@ -443,6 +477,20 @@ a{color:var(--brand);text-decoration:none}
 .leg-sub em{font-style:normal;color:var(--soon);font-weight:640}
 
 /* ============================================================
+   實時導航：我的位置藍點 + 進度條
+   ============================================================ */
+.me-icon{background:none;border:0}
+.me-wrap{position:relative;width:22px;height:22px;display:grid;place-items:center}
+.me-core{position:relative;z-index:2;display:block;width:18px;height:18px;border-radius:50%;
+  background:var(--go);border:3px solid #fff;box-shadow:0 2px 10px rgba(37,99,235,.55)}
+.me-pulse{position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,.35);animation:mePulse 1.9s ease-out infinite}
+@keyframes mePulse{0%{transform:scale(.65);opacity:.85}70%,100%{transform:scale(2.7);opacity:0}}
+@media (prefers-reduced-motion:reduce){ .me-pulse{animation:none;opacity:0} }
+
+.walk-progress{margin-top:11px;height:7px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.walk-progress span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--brand),var(--brand-2));transition:width .6s var(--ease)}
+
+/* ============================================================
    Modal / sheet
    ============================================================ */
 .scrim{
@@ -553,6 +601,11 @@ a{color:var(--brand);text-decoration:none}
   .scrim{padding:12px;align-items:flex-end}
   .hero-count .big{font-size:52px}
   .toasts{bottom:calc(78px + env(safe-area-inset-bottom))}
+  /* 地圖 sheet 打開時，提示訊息移到頂部，避免蓋住右下角縮放鈕 */
+  html.map-sheet-open .toasts{
+    bottom:auto;
+    top:calc(12px + env(safe-area-inset-top));
+  }
 }
 @media (max-width:380px){
   .hero-count .big{font-size:46px;letter-spacing:-2px}

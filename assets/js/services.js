@@ -332,10 +332,56 @@ export async function reverseGeocode(lat, lng) {
   });
 }
 
+/**
+ * 檢查定位係咪可用（瀏覽器只喺 HTTPS 或 localhost 先准用定位）
+ * @returns {{ok:boolean, reason?:string, message?:string}}
+ */
+export function geoAvailability() {
+  if (!('geolocation' in navigator)) {
+    return { ok: false, reason: 'unsupported', message: '此瀏覽器不支援定位。' };
+  }
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    return {
+      ok: false, reason: 'insecure',
+      message: '瀏覽器只會喺 HTTPS 網址下提供定位。請用 https:// 開啟（Vercel 預設就係），或者用 localhost 測試。',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * 連續定位（導航用）：每次位置有更新就回呼
+ * @returns {() => void} 停止追蹤
+ */
+export function watchLocation(onPos, onErr, opts = {}) {
+  const avail = geoAvailability();
+  if (!avail.ok) {
+    onErr && onErr(new ApiError(avail.message, {}));
+    return () => {};
+  }
+  const id = navigator.geolocation.watchPosition(
+    (pos) => onPos({
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,
+      heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : null,
+      speed: Number.isFinite(pos.coords.speed) ? pos.coords.speed : null,
+      at: pos.timestamp || Date.now(),
+    }),
+    (err) => {
+      if (!onErr) return;
+      onErr(new ApiError(err.code === 1 ? '你未允許定位權限，請喺瀏覽器設定開啟。' : err.code === 3 ? '定位逾時，可能係室內訊號唔好。' : '暫時拎唔到位置。'));
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000, ...opts },
+  );
+  return () => { try { navigator.geolocation.clearWatch(id); } catch { /* 忽略 */ } };
+}
+
 /** 瀏覽器定位 */
 export function locate({ timeout = 12000, maximumAge = 20000 } = {}) {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new ApiError('此瀏覽器不支援定位。'));
+    const avail = geoAvailability();
+    if (!avail.ok) return reject(new ApiError(avail.message, {}));
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, at: Date.now() }),
       (err) => reject(new ApiError(err.code === 1 ? '你未允許定位權限。' : '暫時拎唔到位置。', {})),

@@ -104,6 +104,43 @@ export function haversine(a, b) {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 export const polylineLength = (pts) => pts.reduce((sum, p, i) => i ? sum + haversine(pts[i - 1], p) : 0, 0);
+/**
+ * 把一點投影到折線上（用等距圓柱近似，喺幾百米尺度足夠準）
+ * @returns {{index:number, along:number, total:number, offset:number, ratio:number}}
+ */
+export function projectOnPath(coords, point) {
+  if (!coords || !coords.length || !point || point.lat == null) return null;
+  const pt = (c) => ({ lat: c[0], lng: c[1] });
+  const total = polylineLength(coords.map(pt));
+  if (coords.length === 1) {
+    return { index: 0, along: 0, total: 0, offset: haversine(pt(coords[0]), point), ratio: 0 };
+  }
+  let best = { offset: Infinity, index: 1, along: 0 };
+  let acc = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const a = pt(coords[i - 1]), b = pt(coords[i]);
+    const seg = haversine(a, b);
+    const proj = projectOnSegment(a, b, point);
+    if (proj.offset < best.offset) best = { offset: proj.offset, index: i, along: acc + seg * proj.t };
+    acc += seg;
+  }
+  return { ...best, total, ratio: total > 0 ? clamp(best.along / total, 0, 1) : 0 };
+}
+
+function projectOnSegment(a, b, p) {
+  const R = 6371000, toRad = Math.PI / 180;
+  const latRef = ((a.lat + b.lat) / 2) * toRad;
+  const kx = Math.cos(latRef);
+  const X = (lng) => lng * toRad * kx, Y = (lat) => lat * toRad;
+  const ax = X(a.lng), ay = Y(a.lat), bx = X(b.lng), by = Y(b.lat), px = X(p.lng), py = Y(p.lat);
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = clamp(t, 0, 1);
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { t, offset: Math.hypot(px - cx, py - cy) * R };
+}
+
 export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }

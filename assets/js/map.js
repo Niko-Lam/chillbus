@@ -4,7 +4,7 @@
 import { $, el, clear } from './core.js';
 
 let map = null;
-let layers = { walk: [], bus: [], markers: [] };
+let layers = { walk: [], bus: [], markers: [], nav: [], me: [] };
 let pickHandler = null;
 let onPickCb = null;
 let ready = false;
@@ -16,8 +16,10 @@ export function initMap(containerId = 'map') {
   if (map || !mapAvailable()) return map;
   const node = document.getElementById(containerId);
   if (!node) return null;
-  map = window.L.map(node, { zoomControl: true, attributionControl: true, preferCanvas: true })
+  map = window.L.map(node, { zoomControl: false, attributionControl: true, preferCanvas: true })
     .setView([22.3193, 114.1694], 13);
+  // 縮放鈕放右下角（左上角留返俾圖例／路線標籤）
+  window.L.control.zoom({ position: 'bottomright' }).addTo(map);
   window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, detectRetina: true, crossOrigin: true,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -33,21 +35,24 @@ export function invalidate() { setTimeout(() => map && map.invalidateSize(), 90)
 
 /* ---------- dock 開合 ---------- */
 export function openDock() {
-  if (!isSheet()) return;
+  if (!isSheet()) return;                       // 桌面：地圖常駐，唔使開合
   const dock = $('#mapDock');
-  if (dock) dock.classList.add('is-open');
+  if (!dock) return;
+  dock.classList.add('is-open');
+  document.documentElement.classList.add('map-sheet-open');   // 令提示訊息讓開右下角
   invalidate();
 }
 export function closeDock() {
   const dock = $('#mapDock');
   if (dock) dock.classList.remove('is-open');
+  document.documentElement.classList.remove('map-sheet-open');
 }
 export const dockOpen = () => !!($('#mapDock') && $('#mapDock').classList.contains('is-open'));
 
 /* ---------- 圖層 ---------- */
 export function clearMap({ keepBase = true } = {}) {
   if (!map) return;
-  for (const k of ['walk', 'bus', 'markers']) { layers[k].forEach((l) => map.removeLayer(l)); layers[k] = []; }
+  for (const k of ['walk', 'bus', 'markers', 'nav']) { layers[k].forEach((l) => map.removeLayer(l)); layers[k] = []; }
   if (!keepBase && map) { map.eachLayer((l) => { if (l instanceof window.L.TileLayer) map.removeLayer(l); }); }
 }
 
@@ -85,6 +90,67 @@ export function drawBus(coords = [], { color = '#0f766e', opacity = 0.95 } = {})
   const casing = window.L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.55, lineCap: 'round' }).addTo(map);
   const line = window.L.polyline(coords, { color, weight: 5.5, opacity, lineCap: 'round' }).addTo(map);
   layers.bus.push(casing, line);
+}
+
+/* ---------- 導航：我的位置 + 路線進度 ---------- */
+let meMarker = null, meCircle = null;
+
+function meIcon() {
+  return window.L.divIcon({
+    className: 'me-icon', iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<div class="me-wrap"><i class="me-pulse"></i><b class="me-core"></b></div>',
+  });
+}
+
+/** 更新「我的位置」藍點（可選 accuracy 圈） */
+export function setMe(pos, { accuracy = null, follow = false, pad = 0.25 } = {}) {
+  if (!map || !pos || pos.lat == null) return;
+  const ll = [pos.lat, pos.lng];
+  if (!meMarker) meMarker = window.L.marker(ll, { icon: meIcon(), zIndexOffset: 1200, interactive: false }).addTo(map);
+  else meMarker.setLatLng(ll);
+
+  if (accuracy && accuracy < 500) {
+    if (!meCircle) {
+      meCircle = window.L.circle(ll, { radius: accuracy, color: '#2563eb', weight: 1, opacity: .4, fillColor: '#2563eb', fillOpacity: .12, interactive: false }).addTo(map);
+    } else { meCircle.setLatLng(ll); meCircle.setRadius(accuracy); }
+  }
+
+  // 導航模式：位置跑出畫面先自動跟隨（似導航 App）
+  if (follow) {
+    const b = map.getBounds().pad(-pad);
+    if (!b.contains(ll)) map.panTo(ll, { animate: true, duration: 0.6 });
+  }
+  return meMarker;
+}
+
+/** 移除「我的位置」藍點 */
+export function clearMe() {
+  if (!map) return;
+  if (meMarker) { map.removeLayer(meMarker); meMarker = null; }
+  if (meCircle) { map.removeLayer(meCircle); meCircle = null; }
+}
+
+/**
+ * 畫導航進度：走過嘅一段變淡灰、未行嘅一段保持藍色
+ * @param {Array<[number,number]>} coords 路線座標
+ * @param {number} index 目前位置投影到嘅折點索引
+ */
+export function drawNavProgress(coords = [], index = 0) {
+  if (!map) return;
+  layers.nav.forEach((l) => map.removeLayer(l));
+  layers.nav = [];
+  if (!coords.length) return;
+  const i = Math.max(0, Math.min(coords.length - 1, index));
+  if (i > 0) {
+    layers.nav.push(window.L.polyline(coords.slice(0, i + 1), {
+      color: '#94a3b8', weight: 5, opacity: .75, lineCap: 'round',
+    }).addTo(map));
+  }
+  if (i < coords.length - 1) {
+    layers.nav.push(window.L.polyline(coords.slice(i), {
+      color: '#2563eb', weight: 5.5, opacity: .95, lineCap: 'round',
+    }).addTo(map));
+  }
 }
 
 export function fit(points = [], { pad = 60, maxZoom = 17, single = 15 } = {}) {

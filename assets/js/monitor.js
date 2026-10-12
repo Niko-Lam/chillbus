@@ -1,8 +1,8 @@
 /* ============================================================
    monitor.js — 實時監控、出發時間計算、彈窗提醒
    ============================================================ */
-import { state, emit, on, alertUser, toast, getPlace, getRoute, activeRoute, clamp } from './core.js';
-import { fetchEta, walkRoute, locate } from './services.js';
+import { state, emit, on, alertUser, toast, getPlace, getRoute, activeRoute, clamp, haversine, projectOnPath } from './core.js';
+import { fetchEta, walkRoute, locate, watchLocation, geoAvailability } from './services.js';
 
 const monitors = new Map();     // routeId -> monitor record
 let wakeLock = null;
@@ -141,6 +141,113 @@ export function refresh(routeId) {
   poll(rec, { force: true });
 }
 
+/* ---------- 實時導航（似導航 App：藍點會跟住你行） ---------- */
+const navs = new Map();                 // routeId -> nav record
+const NAV = { offRouteM: 90, replanMovedM: 50, replanEveryMs: 12000, arrivedM: 25 };
+
+export const isNavigating = (routeId) => navs.has(routeId);
+export const getNav = (routeId) => navs.get(routeId) || null;
+export const navigatingCount = () => navs.size;
+
+export function startNavigation(routeId) {
+  const route = getRoute(routeId);
+  if (!route) return null;
+  stopNavigation(routeId, { silent: true });
+  const avail = geoAvailability();
+  if (!avail.ok) {
+    toast(avail.reason === 'insecure' ? '定位需要 HTTPS 🔒' : '無法使用定位', { body: avail.message, type: 'alert', ms: 10000 });
+    return null;
+  }
+  const rec = {
+    routeId, route,
+    position: null, accuracy: null, heading: null,
+    walk: null, remainSec: null, remainDist: null, ratio: 0, index: 0,
+    offRoute: false, arrived: false, error: null, waiting: true, permissionDenied: false,
+    lastReplanAt: 0, lastReplanPos: null, startedAt: Date.now(), watchStop: null,
+  };
+  navs.set(routeId, rec);
+  notify();
+  rec.watchStop = watchLocation(
+    (pos) => { handleFix(rec, pos); },
+    (err) => {
+      if (!navs.has(routeId)) return;
+      const hadFix = !!rec.position;
+      rec.error = err;
+      if (/權限/.test(err.message || '')) rec.permissionDenied = true;
+      notify();
+      // 已經有定位就唔好彈警示：行車/室內訊號一時間唔好係正常嘅
+      if (!hadFix || rec.permissionDenied) toast('定位出錯', { body: err.message, type: 'alert' });
+    },
+  );
+  toast('開始導航 🧭', { body: `實時顯示你嘅位置，同仲有幾遠到 ${route.boardName}。`, type: 'go' });
+  return rec;
+}
+
+export function stopNavigation(routeId, { silent = false } = {}) {
+  const rec = navs.get(routeId);
+  if (!rec) return;
+  try { rec.watchStop && rec.watchStop(); } catch { /* 忽略 */ }
+  navs.delete(routeId);
+  if (!silent) toast('已停止導航', { type: 'info' });
+  notify();
+}
+
+export function stopAllNavigation() { [...navs.keys()].forEach((id) => stopNavigation(id, { silent: true })); }
+
+async function handleFix(rec, pos) {
+  if (!navs.has(rec.routeId)) return;
+  rec.position = pos;
+  rec.accuracy = pos.accuracy;
+  rec.heading = pos.heading;
+  rec.error = null;
+  rec.waiting = false;
+
+  const board = { lat: rec.route.boardLat, lng: rec.route.boardLng };
+  let proj = rec.walk ? projectOnPath(rec.walk.coords, pos) : null;
+
+  // 離開路線太遠，或者第一次 → 重新規劃
+  const moved = rec.lastReplanPos ? haversine(rec.lastReplanPos, pos) : Infinity;
+  const strayed = proj ? proj.offset > NAV.offRouteM : false;
+  const needRoute = !rec.walk
+    || (strayed && moved > NAV.replanMovedM && Date.now() - rec.lastReplanAt > NAV.replanEveryMs);
+
+  if (needRoute) {
+    try {
+      const w = await walkRoute(pos, board);
+      if (!navs.has(rec.routeId)) return;
+      rec.walk = w;
+      rec.lastReplanAt = Date.now();
+      rec.lastReplanPos = { lat: pos.lat, lng: pos.lng };
+      proj = projectOnPath(w.coords, pos);
+      rec.offRoute = false;
+    } catch { /* 保留舊路線 */ }
+  } else {
+    rec.offRoute = strayed;
+  }
+
+  // 剩餘距離／時間
+  if (rec.walk) {
+    const total = (proj && proj.total) || rec.walk.distance || 0;
+    const leftM = proj ? Math.max(0, total - proj.along) : haversine(pos, board);
+    rec.ratio = total > 0 ? clamp(1 - leftM / total, 0, 1) : 0;
+    rec.remainDist = Math.round(leftM);
+    rec.index = proj ? proj.index : 0;
+
+    const baseSpeed = rec.walk.distance > 0 && rec.walk.duration > 0
+      ? rec.walk.distance / rec.walk.duration
+      : (state.settings.walkSpeed || 1.25);
+    const gpsSpeed = (pos.speed != null && pos.speed > 0.4) ? pos.speed : null;
+    const speed = gpsSpeed ? baseSpeed * 0.4 + gpsSpeed * 0.6 : baseSpeed;
+    rec.remainSec = Math.max(0, Math.round(leftM / Math.max(0.5, speed)));
+
+    if (!rec.arrived && rec.remainDist <= NAV.arrivedM) {
+      rec.arrived = true;
+      alertUser('到達巴士站 🚏', `你已經到 ${rec.route.boardName}，等車期間我哋會繼續睇住到站時間。`, { type: 'calm', sound: 'alight' });
+    }
+  }
+  notify();
+}
+
 /* ---------- 上車 / 落車 ---------- */
 export function markBoarded(routeId) {
   const route = getRoute(routeId);
@@ -178,8 +285,12 @@ export function snapshot(routeId, now = Date.now()) {
   const settings = state.settings;
   const buffer = +settings.bufferSec || 0;
 
-  const walkSec = rec && rec.walkTo ? rec.walkTo.duration : null;
-  const walkDist = rec && rec.walkTo ? rec.walkTo.distance : null;
+  // 導航中優先採用實時剩餘步行時間（會隨住你行而變）
+  const navRec = navs.get(routeId);
+  const walkSec = navRec && navRec.remainSec != null ? navRec.remainSec
+    : (rec && rec.walkTo ? rec.walkTo.duration : null);
+  const walkDist = navRec && navRec.remainDist != null ? navRec.remainDist
+    : (rec && rec.walkTo ? rec.walkTo.distance : null);
   const boardEtas = rec ? rec.boardEtas : [];
   const alightEtas = rec ? rec.alightEtas : [];
   const boarded = rec ? rec.boarded : state.boarded[routeId];
@@ -309,6 +420,7 @@ export function startTicker() {
 export function syncMonitors() {
   for (const [id, rec] of [...monitors]) {
     const r = getRoute(id);
+    if (!r && navs.has(id)) stopNavigation(id, { silent: true });
     if (!r) { stopMonitor(id, { silent: true }); continue; }
     rec.route = r;
     if (state.boarded[id]) rec.boarded = state.boarded[id]; else rec.boarded = null;
